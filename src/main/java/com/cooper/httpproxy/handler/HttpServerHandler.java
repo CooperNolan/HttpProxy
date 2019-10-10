@@ -2,10 +2,11 @@ package com.cooper.httpproxy.handler;
 
 import com.cooper.httpproxy.config.HttpProxyServerConfig;
 import com.cooper.httpproxy.crt.CertPool;
-import com.cooper.httpproxy.crt.CertUtil;
 import com.cooper.httpproxy.handler.initializer.HttpProxyInitializer;
+import com.cooper.httpproxy.handler.request.HttpRequestHandler;
 import com.cooper.httpproxy.intercept.HttpModifyIntercept;
-import com.cooper.httpproxy.intercept.ProxyHandlerIntercept;
+import com.cooper.httpproxy.intercept.LocalHostIntercept;
+import com.cooper.httpproxy.intercept.ProxyIntercept;
 import com.cooper.httpproxy.util.HttpProxyUtil;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
@@ -20,7 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.*;
-import java.security.cert.CertificateException;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -36,15 +36,15 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
 
     private HttpProxyServerConfig serverConfig;
     private HttpModifyIntercept httpModifyIntercept;
-    private ProxyHandlerIntercept proxyHandlerIntercept;
+    private ProxyIntercept proxyIntercept;
+    private LocalHostIntercept localHostIntercept;
 
 
-    public HttpServerHandler(HttpProxyServerConfig serverConfig,
-                             HttpModifyIntercept httpModifyIntercept,
-                             ProxyHandlerIntercept proxyHandlerIntercept) {
+    public HttpServerHandler(HttpProxyServerConfig serverConfig, HttpModifyIntercept httpModifyIntercept, ProxyIntercept proxyIntercept, LocalHostIntercept localHostIntercept) {
         this.serverConfig = serverConfig;
         this.httpModifyIntercept = httpModifyIntercept;
-        this.proxyHandlerIntercept = proxyHandlerIntercept;
+        this.proxyIntercept = proxyIntercept;
+        this.localHostIntercept = localHostIntercept;
     }
 
     @Override
@@ -56,52 +56,57 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof HttpRequest) {
             HttpRequest req = (HttpRequest) msg;
+            realAddress = HttpProxyUtil.getAddressByRequest(req);
             HttpMethod httpMethod = req.method();
 
-            realAddress = HttpProxyUtil.getAddressByRequest(req);
+            boolean isConnect = httpMethod.equals(HttpMethod.CONNECT);
+            //防止http请求的method是CONNECT
+            //是否需要ssl处理
+            boolean isSsl = isConnect && realAddress.getPort() == 443 ? true : false;
 
             /**
-             * 指定本地请求下载证书
+             * 指定本地url请求处理
+             * 如下载本地ca证书
              * http://serverIP:serverPost/HttpServerConfig.downloadCACertPath
              * 例： http://192.168.1.1:8081/download
              */
-            if (serverConfig.isHandleSsl() && httpMethod.equals(HttpMethod.GET)) {
+            if (httpMethod.equals(HttpMethod.GET)) {
                 String addressToString = realAddress.getAddress().toString();
-                //  192.168.1.1:8081/download  "/"下标
                 int index = addressToString.lastIndexOf("/");
                 if (isLocalHost(addressToString.substring(index + 1), realAddress.getPort())) {
-                    downloadCACert(req.uri());
+                    localHostIntercept.localhostHandler(clientChannel, HttpProxyUtil.getUrl(req.uri()));
                     return;
                 }
             }
-            boolean isHttp = !httpMethod.equals(HttpMethod.CONNECT);
             //连接目标服务器
-            ChannelFuture channelFuture = connect(isHttp,req);
+            ChannelFuture channelFuture = connect(isSsl,req);
             channelFuture.addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) throws Exception {
                     if (future.isSuccess()) {
                         logger.info("connect {}", realAddress.getHostString());
                         serverChannel = future.channel();
-                        isConnect = true;
+                        HttpServerHandler.this.isConnect = true;
                         HttpProxyUtil.removePipeline(clientChannel, HttpProxyUtil.HTTP_SERVER_HANDLER);
                         clientChannel.pipeline().addLast(HttpProxyUtil.HTTP_REQUEST_HANDLER,
-                                new HttpRequestHandler(serverChannel, realAddress, httpModifyIntercept));
+                                new HttpRequestHandler(serverChannel, realAddress, httpModifyIntercept,proxyIntercept));
 
-                        if (isHttp) {
-                            clientChannel.pipeline().fireChannelRead(msg);
-                        } else {
+                        if (isConnect) {
                             HttpResponse httpResponse = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
                             clientChannel.writeAndFlush(httpResponse);
                             if (serverConfig.isHandleSsl()) {
-                                SslContext sslCtx = SslContextBuilder
-                                        .forServer(serverConfig.getServerPriKey(), CertPool.getCert(serverConfig.getPort(),realAddress.getHostString(), serverConfig))
-                                        .build();
-                                clientChannel.pipeline().addFirst(HttpProxyUtil.HTTP_SERVER_SSL_HANDLER, sslCtx.newHandler(clientChannel.alloc()));
+                                if (isSsl) {
+                                    SslContext sslCtx = SslContextBuilder
+                                            .forServer(serverConfig.getServerPriKey(), CertPool.getCert(serverConfig.getPort(),realAddress.getHostString(), serverConfig))
+                                            .build();
+                                    clientChannel.pipeline().addFirst(HttpProxyUtil.HTTP_SERVER_SSL_HANDLER, sslCtx.newHandler(clientChannel.alloc()));
+                                }
                             } else {
                                 HttpProxyUtil.removePipeline(clientChannel,HttpProxyUtil.HTTP_SERVER_CODEC);
                             }
                             ReferenceCountUtil.release(msg);
+                        } else{
+                            clientChannel.pipeline().fireChannelRead(msg);
                         }
 
                         if (requestList != null) {
@@ -139,11 +144,11 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
         return false;
     }
 
-    private ChannelFuture connect(boolean isHttp,HttpRequest req) {
+    private ChannelFuture connect(boolean isSsl,HttpRequest req) {
         //获取代理服务器
-        ProxyHandler proxyHandler = proxyHandlerIntercept.proxyHandler(realAddress,req);
+        ProxyHandler proxyHandler = proxyIntercept.proxyHandler(realAddress,req);
         ChannelInitializer channelInitializer =
-                new HttpProxyInitializer(clientChannel, realAddress, proxyHandler, isHttp, serverConfig);
+                new HttpProxyInitializer(clientChannel, realAddress, proxyHandler, isSsl, serverConfig);
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.group(clientChannel.eventLoop())
                 .channel(NioSocketChannel.class)
@@ -153,39 +158,6 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
             bootstrap.resolver(NoopAddressResolverGroup.INSTANCE);
         }
         return bootstrap.connect(realAddress);
-    }
-
-    public void downloadCACert(String uri) throws CertificateException {
-        if (uri.matches("^.*" + serverConfig.getDownloadCACertPath() + "/ca.crt$")) {
-            HttpResponse httpResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1,
-                    HttpResponseStatus.OK);
-            byte[] bts = CertUtil
-                    .loadCert(Thread.currentThread().getContextClassLoader().getResourceAsStream("cacert/ca.crt"))
-                    .getEncoded();
-            httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/x-x509-ca.crt-cert");
-            httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, bts.length);
-            httpResponse.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-            HttpContent httpContent = new DefaultLastHttpContent();
-            httpContent.content().writeBytes(bts);
-            clientChannel.writeAndFlush(httpResponse);
-            clientChannel.writeAndFlush(httpContent);
-            clientChannel.close();
-        } else if (uri.matches("^.*" + serverConfig.getDownloadCACertPath() + "$")) {
-            HttpResponse httpResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1,
-                    HttpResponseStatus.OK);
-            String html = "<html><body><div style=\"margin-top:100px;text-align:center;\"><a href=\"" +
-                    serverConfig.getDownloadCACertPath() +
-                    "/ca.crt\">点击下载证书</a></div></body></html>";
-            httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html;charset=utf-8");
-            httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, html.getBytes().length);
-            httpResponse.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            HttpContent httpContent = new DefaultLastHttpContent();
-            httpContent.content().writeBytes(html.getBytes());
-            clientChannel.writeAndFlush(httpResponse);
-            clientChannel.writeAndFlush(httpContent);
-        } else if (uri.matches("^.*/favicon.ico$")) {
-            clientChannel.close();
-        }
     }
 
     @Override

@@ -111,7 +111,7 @@ public class CertUtil {
     }
 
     /**
-     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.der
+     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.pem
      */
     public static PublicKey loadPubKey(byte[] bts) throws Exception {
         EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(bts);
@@ -119,7 +119,7 @@ public class CertUtil {
     }
 
     /**
-     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.der
+     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.pem
      */
     public static PublicKey loadPubKey(String path) throws Exception {
         EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(Files.readAllBytes(Paths.get(path)));
@@ -127,14 +127,14 @@ public class CertUtil {
     }
 
     /**
-     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.der
+     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.pem
      */
     public static PublicKey loadPubKey(URI uri) throws Exception {
         return loadPubKey(Paths.get(uri).toString());
     }
 
     /**
-     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.der
+     * 从文件加载RSA公钥 openssl rsa -in ca.crt.key -pubout -outform DER -out ca_pub.pem
      */
     public static PublicKey loadPubKey(InputStream inputStream) throws Exception {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();

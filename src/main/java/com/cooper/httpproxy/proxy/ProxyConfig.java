@@ -13,6 +13,7 @@ public class ProxyConfig implements Serializable {
     private String pwd;
 
     public ProxyConfig() {
+        this.proxyType = ProxyType.HTTP;
     }
 
     public ProxyConfig(String host, int port) {
@@ -73,6 +74,20 @@ public class ProxyConfig implements Serializable {
 
     public void setPwd(String pwd) {
         this.pwd = pwd;
+    }
+
+    public void set(Integer index, String config) throws Exception{
+        if(index == 0){
+            this.host = config;
+        }else if(index == 1){
+            this.port = Integer.parseInt(config);
+        }else if(index == 2){
+            this.proxyType = ProxyType.valueOf(config);
+        }else if(index == 3){
+            this.user = config;
+        }else if(index == 4){
+            this.pwd = config;
+        }
     }
 
     @Override

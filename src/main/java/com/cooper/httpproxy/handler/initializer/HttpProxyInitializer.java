@@ -1,8 +1,8 @@
 package com.cooper.httpproxy.handler.initializer;
 
 import com.cooper.httpproxy.config.HttpProxyServerConfig;
-import com.cooper.httpproxy.handler.HttpBeforeResponseHandler;
-import com.cooper.httpproxy.handler.HttpResponseHandler;
+import com.cooper.httpproxy.handler.response.HttpBeforeResponseHandler;
+import com.cooper.httpproxy.handler.response.HttpResponseHandler;
 import com.cooper.httpproxy.handler.HttpServerHandler;
 import com.cooper.httpproxy.intercept.HttpModifyIntercept;
 import com.cooper.httpproxy.util.HttpProxyUtil;
@@ -24,18 +24,18 @@ public class HttpProxyInitializer extends ChannelInitializer {
     private Channel clientChannel;
     private InetSocketAddress realAddress;
     private ProxyHandler proxyHandler;
-    private boolean isHttp;
+    private boolean isSsl;
     private HttpProxyServerConfig serverConfig;
 
     public HttpProxyInitializer(Channel clientChannel,
                                 InetSocketAddress realAddress,
                                 ProxyHandler proxyHandler,
-                                boolean isHttp,
+                                boolean isSsl,
                                 HttpProxyServerConfig serverConfig) {
         this.clientChannel = clientChannel;
         this.realAddress = realAddress;
         this.proxyHandler = proxyHandler;
-        this.isHttp = isHttp;
+        this.isSsl = isSsl;
         this.serverConfig = serverConfig;
     }
 
@@ -46,11 +46,11 @@ public class HttpProxyInitializer extends ChannelInitializer {
         if (proxyHandler != null) {
             channel.pipeline().addLast(proxyHandler);
         }
-        if (!isHttp && !serverConfig.isHandleSsl()) {
+        if (isSsl && !serverConfig.isHandleSsl()) {
             channel.pipeline().addLast(HttpProxyUtil.HTTP_RESPONSE_HANDLER, new HttpResponseHandler(clientChannel,realAddress,httpModifyIntercept));
             return;
         }
-        if (!isHttp && serverConfig.isHandleSsl()) {
+        if (isSsl && serverConfig.isHandleSsl()) {
             channel.pipeline().addLast(HttpProxyUtil.HTTP_CLIENT_SSL_HANDLER,serverConfig.getClientSslCtx().newHandler(channel.alloc()));
         }
         channel.pipeline().addLast(HttpProxyUtil.HTTP_CLIENT_CODEC, new HttpClientCodec());

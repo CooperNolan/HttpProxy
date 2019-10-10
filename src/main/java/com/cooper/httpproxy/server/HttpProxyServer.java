@@ -1,11 +1,16 @@
 package com.cooper.httpproxy.server;
 
 import com.cooper.httpproxy.config.HttpProxyServerConfig;
+import com.cooper.httpproxy.crt.CertPool;
 import com.cooper.httpproxy.crt.CertUtil;
-import com.cooper.httpproxy.handler.HttpBeforeRequestHandler;
+import com.cooper.httpproxy.handler.localhost.downloadca.DownLoadCAHandler;
+import com.cooper.httpproxy.handler.localhost.downloadca.HtmlDownLoadCAHandler;
+import com.cooper.httpproxy.handler.request.HttpBeforeRequestHandler;
 import com.cooper.httpproxy.handler.HttpServerHandler;
+import com.cooper.httpproxy.handler.localhost.LocalHostHandler;
 import com.cooper.httpproxy.intercept.HttpModifyIntercept;
-import com.cooper.httpproxy.intercept.ProxyHandlerIntercept;
+import com.cooper.httpproxy.intercept.LocalHostIntercept;
+import com.cooper.httpproxy.intercept.ProxyIntercept;
 import com.cooper.httpproxy.util.HttpProxyUtil;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -37,16 +42,19 @@ public class HttpProxyServer {
 
     private HttpProxyServerConfig serverConfig;
     private HttpModifyIntercept httpModifyIntercept;
-    private ProxyHandlerIntercept proxyHandlerIntercept;
+    private ProxyIntercept proxyIntercept;
+    private LocalHostIntercept localHostIntercept;
 
     public HttpProxyServer() {
         serverConfig = new HttpProxyServerConfig();
+        localHostIntercept = new LocalHostIntercept();
     }
 
     public void start(Integer port){
         serverConfig.setPort(port);
         start();
     }
+
     public void start(){
         init();
         NioEventLoopGroup bossGroup = new NioEventLoopGroup();
@@ -62,7 +70,7 @@ public class HttpProxyServer {
                                     .addLast(HttpProxyUtil.HTTP_SERVER_CODEC, new HttpServerCodec())
                                     .addLast(HttpProxyUtil.HTTP_BEFORE_REQUEST_HANDLER, new HttpBeforeRequestHandler(serverConfig))
                                     .addLast(HttpProxyUtil.HTTP_OBJECT_AGGREGATOR, new HttpObjectAggregator(serverConfig.getMaxContentLengthRequest()))
-                                    .addLast(HttpProxyUtil.HTTP_SERVER_HANDLER, new HttpServerHandler(serverConfig, httpModifyIntercept, proxyHandlerIntercept));
+                                    .addLast(HttpProxyUtil.HTTP_SERVER_HANDLER, new HttpServerHandler(serverConfig, httpModifyIntercept, proxyIntercept,localHostIntercept));
                         }
                     });
             ChannelFuture channelFuture = serverBootstrap.bind(serverConfig.getPort()).sync();
@@ -73,16 +81,17 @@ public class HttpProxyServer {
         } finally {
             bossGroup.shutdownGracefully();
             workGroup.shutdownGracefully();
+            CertPool.clear();
         }
     }
 
     private void init(){
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         if (serverConfig.isHandleSsl()) {
             try {
                 serverConfig.setClientSslCtx(
                         SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE)
                                 .build());
-                ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
                 X509Certificate caCert;
                 PrivateKey caPriKey;
                 caCert = CertUtil.loadCert(classLoader.getResourceAsStream("cacert/ca.crt"));
@@ -102,33 +111,33 @@ public class HttpProxyServer {
                 serverConfig.setHandleSsl(false);
                 logger.error(e.toString());
             }
-            if(serverConfig.isHandleSsl()) {
-                try {
-                    Set<String> localhost = new HashSet<>();
-                    Enumeration<NetworkInterface> nets = NetworkInterface.getNetworkInterfaces();
-                    NetworkInterface net;
-                    InetAddress inetAddress;
-                    while (nets.hasMoreElements()) {
-                        net = nets.nextElement();
-                        Enumeration<InetAddress> address = net.getInetAddresses();
-                        while (address.hasMoreElements()) {
-                            inetAddress = address.nextElement();
-                            if (inetAddress != null && inetAddress instanceof Inet4Address)
-                                localhost.add(inetAddress.getHostAddress());
-                        }
-                    }
-                    serverConfig.setLocalhost(localhost);
-                } catch (SocketException e) {
-                    logger.error(e.toString());
+        }
+        try {
+            Set<String> localhost = new HashSet<>();
+            Enumeration<NetworkInterface> nets = NetworkInterface.getNetworkInterfaces();
+            NetworkInterface net;
+            InetAddress inetAddress;
+            while (nets.hasMoreElements()) {
+                net = nets.nextElement();
+                Enumeration<InetAddress> address = net.getInetAddresses();
+                while (address.hasMoreElements()) {
+                    inetAddress = address.nextElement();
+                    if (inetAddress != null && inetAddress instanceof Inet4Address)
+                        localhost.add(inetAddress.getHostAddress());
                 }
             }
+            serverConfig.setLocalhost(localhost);
+        } catch (SocketException e) {
+            logger.error(e.toString());
         }
         if (httpModifyIntercept == null) {
             httpModifyIntercept = new HttpModifyIntercept();
         }
-        if (proxyHandlerIntercept == null) {
-            proxyHandlerIntercept = new ProxyHandlerIntercept();
-        }
+        proxyIntercept = new ProxyIntercept();
+        proxyIntercept.init();
+        localHostIntercept.addLocalHostHandler("/favicon.ico",new LocalHostHandler());
+        localHostIntercept.addLocalHostHandler("/" + serverConfig.getDownloadCACertPath(),new HtmlDownLoadCAHandler(serverConfig.getDownloadCACertPath()));
+        localHostIntercept.addLocalHostHandler("/" + serverConfig.getDownloadCACertPath() + "/ca.crt",new DownLoadCAHandler());
     }
 
     public HttpProxyServer maxContentLengthRequest(Integer maxContentLengthRequest) {
@@ -156,8 +165,8 @@ public class HttpProxyServer {
         return this;
     }
 
-    public HttpProxyServer proxyHandlerIntercept(ProxyHandlerIntercept proxyHandlerIntercept) {
-        this.proxyHandlerIntercept = proxyHandlerIntercept;
+    public HttpProxyServer addLocalHostHandler(String uri, LocalHostHandler localHostHandler) {
+        localHostIntercept.addLocalHostHandler(uri,localHostHandler);
         return this;
     }
 }

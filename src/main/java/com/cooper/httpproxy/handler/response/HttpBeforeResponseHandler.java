@@ -1,4 +1,4 @@
-package com.cooper.httpproxy.handler;
+package com.cooper.httpproxy.handler.response;
 
 import com.cooper.httpproxy.config.HttpProxyServerConfig;
 import com.cooper.httpproxy.util.HttpProxyUtil;
